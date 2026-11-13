@@ -1,0 +1,279 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+\definecolor{brand}{HTML}{2E6F4F}
+\definecolor{softbg}{HTML}{F3F6F1}
+\definecolor{accent}{HTML}{D9E7D8}
+\definecolor{dark}{HTML}{1F2A2A}
+\definecolor{muted}{HTML}{5F6C6C}
+
+\begin{document}
+
+\title{\textbf{Enterprise AI Knowledge Assistant}\\Architecture, Data Flow, and Working Explanation}
+\author{Generated from the project implementation}
+\date{\today}
+
+\maketitle
+
+\section{Project Summary}
+This project is a lightweight private document-questioning system designed for company knowledge retrieval. It allows a user to upload PDFs, DOCX files, or CSV files, store them in a secure local Dockerized environment, split them into searchable chunks, embed them using a local model, and answer questions grounded in the uploaded sources.
+
+The architecture combines four major layers:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item a React web frontend,
+    \item a FastAPI backend,
+    \item a PostgreSQL database with pgvector support,
+    \item and an Ollama-powered local LLM for answer generation.
+\end{itemize}
+
+The key idea is retrieval-augmented generation (RAG): instead of asking the language model to answer from general knowledge, the system first searches the document index for the most relevant passages and then asks the model to answer only from those retrieved excerpts.
+
+\section{High-Level Architecture}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=2cm,
+    box/.style={draw, rounded corners, align=center, minimum width=3.2cm, minimum height=1.2cm, fill=softbg, thick},
+    data/.style={draw, rounded corners, align=center, minimum width=2.5cm, minimum height=1cm, fill=accent, thick},
+    arrow/.style={->, thick, >=stealth}
+]
+
+\node[box] (frontend) {React Frontend\\Vite + JavaScript};
+\node[box, right=3cm of frontend] (api) {FastAPI Backend\\\texttt{main.py}};
+\node[data, below=2.2cm of api] (db) {PostgreSQL\\pgvector};
+\node[box, right=3.2cm of api] (ollama) {Ollama\\Local LLM};
+\node[data, above=2cm of api] (upload) {Uploaded Files\\PDF / DOCX / CSV};
+
+\draw[arrow] (frontend) -- node[above]{HTTP requests} (api);
+\draw[arrow] (api) -- node[left]{store / query vectors} (db);
+\draw[arrow] (api) -- node[above]{generate answer} (ollama);
+\draw[arrow] (upload) -- (api);
+
+\end{tikzpicture}
+\caption{System-level architecture of the project.}
+\end{figure}
+
+The frontend is responsible only for the user interface: uploading files, sending questions, and showing results and citations. The backend is the central orchestration layer. It validates uploaded files, extracts text, stores metadata, creates vector embeddings, performs semantic search, and calls the local LLM for the final answer.
+
+\section{Core Components}
+
+\subsection{Frontend: React + Vite}
+The frontend is implemented in \texttt{frontend/src/App.jsx}. It provides:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item a file upload control,
+    \item a document list showing uploaded sources,
+    \item a chat panel for questions,
+    \item and source-citation rendering in the answer.
+\end{itemize}
+
+The UI is intentionally simple: it focuses on proving the core idea of grounded enterprise search rather than on a large production interface.
+
+\subsection{Backend: FastAPI}
+The main API logic lives in \texttt{backend/app/main.py}. It exposes REST endpoints such as:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item \texttt{/api/health} for readiness checks,
+    \item \texttt{/api/documents} for upload and listing,
+    \item \texttt{/api/chat} for question answering.
+\end{itemize}
+
+The API performs validation before indexing. It enforces file type restrictions, maximum upload size, and minimum question length. It also performs answer validation by checking whether returned citations match the retrieved chunks.
+
+\subsection{Document Parsing Layer}
+The parsing logic is in \texttt{backend/app/documents.py}. It supports:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item PDF via \texttt{pypdf},
+    \item DOCX via \texttt{python-docx},
+    \item CSV via built-in Python CSV parsing.
+\end{itemize}
+
+The parser converts document bytes into plain text before indexing. This is essential because vector search works on textual chunks rather than raw file bytes.
+
+\subsection{Embedding and Retrieval Layer}
+The search logic is in \texttt{backend/app/rag.py}. The most important steps are:
+
+\begin{enumerate}[leftmargin=2em]
+    \item split text into chunks,
+    \item embed each chunk with a sentence-transformer style local model,
+    \item store embeddings in PostgreSQL/pgvector,
+    \item embed the incoming question,
+    \item find semantically similar chunks using cosine distance,
+    \item return the top matching passages to the LLM.
+\end{enumerate}
+
+The implementation uses the Hugging Face model \texttt{BAAI/bge-small-en-v1.5} via the local FastEmbed runtime. The chosen dimensionality is 384 dimensions, and the database uses a cosine-distance HNSW index for efficient vector similarity search.
+
+\subsection{Database Layer}
+The database layer is defined in \texttt{backend/app/models.py} and initialized in \texttt{backend/app/database.py}.
+
+The application stores:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item each uploaded document as a row in the \texttt{documents} table,
+    \item each chunk as a row in the \texttt{document\_chunks} table,
+    \item and vector embeddings in a pgvector column.
+\end{itemize}
+
+The schema is designed so that each chunk is linked to its parent document and has a chunk index. This allows the system to trace every answer back to a source document and passage.
+
+\subsection{LLM Layer}
+The generation logic is in \texttt{backend/app/generation.py}. It sends the retrieved source excerpts to Ollama using the configured model, usually \texttt{llama3.2:3b} by default.
+
+The prompt instructs the model to:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item answer only from the supplied excerpts,
+    \item cite source numbers like \texttt{[1]}, \texttt{[2]}, and \texttt{[3]},
+    \item never invent a citation,
+    \item and refuse with a fixed answer if the sources do not support the claim.
+\end{itemize}
+
+This is essential because the project is designed to keep the LLM grounded in retrieved company data rather than letting it hallucinate from general knowledge.
+
+\section{End-to-End Workflow}
+
+\subsection{Document Upload Pipeline}
+When the user uploads a file, the workflow is:
+
+\begin{enumerate}[leftmargin=2em]
+    \item the frontend sends the file to \texttt{/api/documents};
+    \item the backend validates extension and file size;
+    \item the raw bytes are saved to the upload directory;
+    \item text extraction is performed based on document type;
+    \item the file content is split into chunks;
+    \item embeddings are created with the local embedding model;
+    \item the document and chunk data are written to PostgreSQL/pgvector;
+    \item the API returns a response with chunk count and preview.
+\end{enumerate}
+
+This is the data ingestion step that turns unstructured files into searchable knowledge units.
+
+\subsection{Question-Answer Pipeline}
+When a user asks a question, the backend performs the following:
+
+\begin{enumerate}[leftmargin=2em]
+    \item accepts the question via \texttt{/api/chat};
+    \item embeds the question with the same embedding model;
+    \item compares it against stored document chunks using cosine distance;
+    \item removes results below a similarity threshold;
+    \item passes the top matching excerpts to the LLM;
+    \item validates that citations match the retrieved sources;
+    \item returns the answer and source metadata to the frontend.
+\end{enumerate}
+
+This is the retrieval-augmented generation phase. The model does not answer from the whole corpus blindly; it only sees the relevant passages.
+
+\section{Why the System Works}
+The system works because it separates the problem into three distinct tasks:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Understanding the document:} parsing PDF/DOCX/CSV into plain text,
+    \item \textbf{Finding relevant knowledge:} using embeddings and vector search,
+    \item \textbf{Answering carefully:} asking the LLM to answer only from retrieved excerpts.
+\end{itemize}
+
+This avoids a common failure mode in naive chatbot systems: the model invents answers or draws on irrelevant background knowledge. In this project, retrieval is the gatekeeper and citations are the verification layer.
+
+\section{Data Model}
+The application stores structured metadata in PostgreSQL, with each document linked to its chunks.
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{>{\raggedright\arraybackslash}p{2.5cm} >{\raggedright\arraybackslash}p{4cm} >{\raggedright\arraybackslash}p{7cm}}
+\toprule
+\textbf{Table} & \textbf{Purpose} & \textbf{Key Fields} \\
+\midrule
+\texttt{documents} & metadata for each uploaded file & id, filename, file\_type, created\_at \\
+\texttt{document\_chunks} & text chunks plus embeddings & document\_id, chunk\_index, content, embedding \\
+\bottomrule
+\end{tabular}
+\caption{Core database tables.}
+\end{table}
+
+The embedding column uses pgvector, which makes cosine-similarity search efficient and native to PostgreSQL. This reduces the need for a separate vector database while still enabling semantic retrieval.
+
+\section{Dockerized Deployment}
+The project uses Docker Compose to run the complete environment:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item \texttt{db}: PostgreSQL with pgvector,
+    \item \texttt{ollama}: local LLM runtime,
+    \item \texttt{api}: FastAPI backend,
+    \item \texttt{web}: React/Vite frontend.
+\end{itemize}
+
+This makes setup reproducible. A developer can run the stack with a single command:
+
+\begin{lstlisting}[language=bash]
+docker compose up --build
+\end{lstlisting}
+
+The project also mounts persistent volumes for document storage and model cache so uploaded files and cached embeddings are retained across restarts.
+
+\section{Strengths of This Project}
+This project is strong as a portfolio and learning project because it demonstrates several relevant engineering concepts:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item full-stack application design,
+    \item document ingestion and parsing,
+    \item semantic retrieval using embeddings,
+    \item integration with local LLM services,
+    \item citation-aware answer generation,
+    \item and Docker-based deployment.
+\end{itemize}
+
+It is a realistic AI application architecture rather than a single-script demo. This makes it useful for describing practical AI engineering skills in an interview or resume.
+
+\section{Limitations and Future Improvements}
+The project is intentionally a starter system, so it has known limitations:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item only PDF, DOCX, and CSV are supported,
+    \item scanned PDFs without embedded text are not handled,
+    \item local embeddings and local LLMs are smaller than frontier models,
+    \item there is no authentication or role-based access control,
+    \item and there is no full evaluation framework for factuality or hallucination detection.
+\end{itemize}
+
+Future improvements could include:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item user authentication and document permissions,
+    \item re-ranking for better retrieval quality,
+    \item a stronger search model,
+    \item better evaluation scripts for answer correctness,
+    \item and production-ready deployment configuration.
+\end{itemize}
+
+\section{Conclusion}
+This project implements a practical enterprise knowledge assistant using RAG. It combines document parsing, vector indexing, semantic search, and local LLM answer generation in a single, Dockerized system. The design is simple but effective for demonstrating how AI systems can ground answers in trusted company documents instead of relying on generic model memory.
+
+In short, the application is a strong demonstration of real-world AI engineering practices: data ingestion, indexing, retrieval, reasoning, and validation.
+
+\end{document}
